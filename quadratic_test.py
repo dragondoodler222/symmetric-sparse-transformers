@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 import math
+import gc
 from abc import ABC, abstractmethod
 
 # --- IMPORT MODELS ---
@@ -213,6 +214,24 @@ class ExperimentSuite:
         params = ParamCalculator.get_params(model)
         print(f"  Registered '{name}' | Params: {params:,} | d_model: {model.d_model}")
 
+    def cleanup(self):
+        """Move all models/data off GPU and free CUDA memory."""
+        for name in list(self.models.keys()):
+            self.models[name].cpu()
+            del self.models[name]
+        for name in list(self.static_data.keys()):
+            v = self.static_data[name]
+            if isinstance(v, list):
+                for t in v:
+                    del t
+            elif v is not None:
+                del v
+        self.models.clear()
+        self.static_data.clear()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def run(self, steps=1000, batch_size=32):
         print(f"\n--- {self.task.name()} ---")
         opts = {k: optim.Adam(v.parameters(), lr=1e-3) for k, v in self.models.items()}
@@ -270,22 +289,30 @@ def build_debruijn_edges(N, degree=2):
     return torch.tensor(src, dtype=torch.long), torch.tensor(dst, dtype=torch.long)
 
 def build_suite(task, N, target_params=45000):
-    """Create an ExperimentSuite with all 10 models registered."""
+    """Create an ExperimentSuite with all models registered.
+    O(N^3) full models (SetTrans-3, SeqTrans-3) are skipped when N > 48
+    because their forward pass allocates O(N^3 * d_model) memory.
+    """
     suite = ExperimentSuite(task)
+    include_cubic = N <= 129
 
     print(f"\nBuilding suite for: {task.name()}")
     print(f"  Target params: ~{target_params:,}")
+    if not include_cubic:
+        print(f"  Skipping O(N^3) full models (N={N} > 48)")
 
     # --- Solve balanced dimensions ---
     d_deep  = ParamCalculator.solve_d(lambda d: DeepSetBaseline(d), target_params)
     d_set2  = ParamCalculator.solve_d(lambda d: Full2Trans(d), target_params)
-    d_set3  = ParamCalculator.solve_d(lambda d: Full3Trans(d, N), target_params)
     d_seq2  = ParamCalculator.solve_d(lambda d: Full2TransSeq(d, N), target_params)
-    d_seq3  = ParamCalculator.solve_d(lambda d: Full3TransSeq(d, N), target_params)
     d_sp2   = ParamCalculator.solve_d(lambda d: Sparse2Trans(d), target_params)
     d_sp3   = ParamCalculator.solve_d(lambda d: Sparse3Trans(d), target_params)
     d_mpnn2 = ParamCalculator.solve_d(lambda d: MPNNModel(d), target_params)
     d_mpnn3 = ParamCalculator.solve_d(lambda d: MPNN3Body(d), target_params)
+
+    if include_cubic:
+        d_set3 = ParamCalculator.solve_d(lambda d: Full3Trans(d, N), target_params)
+        d_seq3 = ParamCalculator.solve_d(lambda d: Full3TransSeq(d, N), target_params)
 
     # --- Graph structures ---
     db_src, db_dst = build_debruijn_edges(N)
@@ -294,17 +321,19 @@ def build_suite(task, N, target_params=45000):
     rand_dst = torch.randint(0, N, (num_edges,))
     rand_triplets = torch.randint(0, N, (num_edges, 3))
 
-    # --- Register all models ---
+    # --- Register models ---
     # 1-body baseline
     suite.register("DeepSet (1-body)", DeepSetBaseline(d_deep))
 
     # Set-Transformers (permutation invariant)
     suite.register("SetTrans-2 (O(N^2))", Full2Trans(d_set2))
-    suite.register("SetTrans-3 (O(N^3))", Full3Trans(d_set3, N))
+    if include_cubic:
+        suite.register("SetTrans-3 (O(N^3))", Full3Trans(d_set3, N))
 
     # Seq-Transformers (position aware)
     suite.register("SeqTrans-2 (O(N^2))", Full2TransSeq(d_seq2, N))
-    suite.register("SeqTrans-3 (O(N^3))", Full3TransSeq(d_seq3, N))
+    if include_cubic:
+        suite.register("SeqTrans-3 (O(N^3))", Full3TransSeq(d_seq3, N))
 
     # Sparse models (edges/triplets baked in)
     suite.register("DeBruijn-2 (Struct)", Sparse2Trans(d_sp2, db_src, db_dst))
@@ -336,3 +365,5 @@ if __name__ == "__main__":
         suite = build_suite(task, N, TARGET_PARAMS)
         history = suite.run(steps=STEPS)
         suite.plot(history)
+        suite.cleanup()
+        del suite
