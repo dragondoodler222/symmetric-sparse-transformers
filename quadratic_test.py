@@ -294,7 +294,7 @@ def build_suite(task, N, target_params=45000):
     because their forward pass allocates O(N^3 * d_model) memory.
     """
     suite = ExperimentSuite(task)
-    include_cubic = N <= 129
+    include_cubic = N <= 48
 
     print(f"\nBuilding suite for: {task.name()}")
     print(f"  Target params: ~{target_params:,}")
