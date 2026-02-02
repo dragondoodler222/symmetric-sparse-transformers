@@ -4,6 +4,8 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import math
 import gc
+import csv
+import os
 from abc import ABC, abstractmethod
 
 # --- IMPORT MODELS ---
@@ -292,6 +294,24 @@ class ExperimentSuite:
         plt.tight_layout()
         plt.show()
 
+    def save_csv(self, history, output_dir="results"):
+        """Save loss history to CSV. One file per task, columns = step + model names."""
+        os.makedirs(output_dir, exist_ok=True)
+        safe_name = self.task.name().replace(" ", "_").replace("(", "").replace(")", "")
+        path = os.path.join(output_dir, f"{safe_name}.csv")
+
+        names = list(history.keys())
+        num_steps = max(len(v) for v in history.values())
+
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["step"] + names)
+            for i in range(num_steps):
+                row = [i] + [history[n][i] if i < len(history[n]) else "" for n in names]
+                writer.writerow(row)
+
+        print(f"  Saved: {path}")
+
 # --- 3. HELPERS ---
 
 def build_debruijn_edges(N, degree=2):
@@ -378,6 +398,7 @@ if __name__ == "__main__":
     for task in tasks:
         suite = build_suite(task, N, TARGET_PARAMS)
         history = suite.run(steps=STEPS)
+        suite.save_csv(history)
         suite.plot(history)
         suite.cleanup()
         del suite
