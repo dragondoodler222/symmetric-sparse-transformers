@@ -258,7 +258,7 @@ class ExperimentSuite:
                 opt.step()
                 losses.append(loss.item())
 
-                if step % 200 == 0:
+                if step % 20 == 0:
                     print(f"  [{name}] Step {step}: {losses[-1]:.4f}")
 
             history[name] = losses
