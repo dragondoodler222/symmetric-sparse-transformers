@@ -200,66 +200,80 @@ class ExperimentSuite:
         self.static_data = {}
 
     def register(self, name, model, static_input=None):
-        model = model.to(self.device)
+        """Stage a model for training. Models stay on CPU until their turn to train."""
         self.models[name] = model
 
         if static_input is not None:
-            if isinstance(static_input, (list, tuple)):
-                self.static_data[name] = [x.to(self.device) for x in static_input]
-            else:
-                self.static_data[name] = static_input.to(self.device)
+            self.static_data[name] = static_input
         else:
             self.static_data[name] = None
 
         params = ParamCalculator.get_params(model)
         print(f"  Registered '{name}' | Params: {params:,} | d_model: {model.d_model}")
 
-    def cleanup(self):
-        """Move all models/data off GPU and free CUDA memory."""
-        for name in list(self.models.keys()):
-            self.models[name].cpu()
-            del self.models[name]
-        for name in list(self.static_data.keys()):
-            v = self.static_data[name]
-            if isinstance(v, list):
-                for t in v:
-                    del t
-            elif v is not None:
-                del v
-        self.models.clear()
-        self.static_data.clear()
+    def _free_gpu(self):
+        """Force-free all GPU memory."""
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def cleanup(self):
+        """Release all references so the suite can be garbage collected."""
+        self.models.clear()
+        self.static_data.clear()
+        self._free_gpu()
+
     def run(self, steps=1000, batch_size=32):
+        """Train each model to completion sequentially, one at a time on GPU."""
         print(f"\n--- {self.task.name()} ---")
-        opts = {k: optim.Adam(v.parameters(), lr=1e-3) for k, v in self.models.items()}
         loss_fn = nn.MSELoss()
-        history = {k: [] for k in self.models}
+        history = {}
 
-        for step in range(steps):
-            x, y = self.task.generate_batch(batch_size, self.device)
+        for name, model in self.models.items():
+            # Move this model to GPU
+            model = model.to(self.device)
+            extra = self.static_data[name]
+            if extra is not None:
+                if isinstance(extra, (list, tuple)):
+                    extra = [x.to(self.device) for x in extra]
+                else:
+                    extra = extra.to(self.device)
 
-            for name, model in self.models.items():
-                opts[name].zero_grad()
+            opt = optim.Adam(model.parameters(), lr=1e-3)
+            losses = []
 
-                extra = self.static_data[name]
+            for step in range(steps):
+                x, y = self.task.generate_batch(batch_size, self.device)
+                opt.zero_grad()
+
                 if extra is None:
                     pred = model(x)
-                elif isinstance(extra, list):
+                elif isinstance(extra, (list, tuple)):
                     pred = model(x, *extra)
                 else:
                     pred = model(x, extra)
 
                 loss = loss_fn(pred, y)
                 loss.backward()
-                opts[name].step()
-                history[name].append(loss.item())
+                opt.step()
+                losses.append(loss.item())
 
-            if step % 200 == 0:
-                losses_str = " | ".join(f"{n}: {h[-1]:.4f}" for n, h in history.items())
-                print(f"  Step {step}: {losses_str}")
+                if step % 200 == 0:
+                    print(f"  [{name}] Step {step}: {losses[-1]:.4f}")
+
+            history[name] = losses
+            print(f"  [{name}] Done. Final loss: {losses[-1]:.4f}")
+
+            # Move model back to CPU, free optimizer and GPU cache
+            model.cpu()
+            if extra is not None:
+                if isinstance(extra, (list, tuple)):
+                    for x in extra:
+                        x.cpu()
+                else:
+                    extra.cpu()
+            del opt, extra
+            self._free_gpu()
 
         return history
 
