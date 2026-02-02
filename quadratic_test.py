@@ -323,30 +323,22 @@ def build_debruijn_edges(N, degree=2):
     return torch.tensor(src, dtype=torch.long), torch.tensor(dst, dtype=torch.long)
 
 def build_suite(task, N, target_params=45000):
-    """Create an ExperimentSuite with all models registered.
-    O(N^3) full models (SetTrans-3, SeqTrans-3) are skipped when N > 48
-    because their forward pass allocates O(N^3 * d_model) memory.
-    """
+    """Create an ExperimentSuite with all models registered."""
     suite = ExperimentSuite(task)
-    include_cubic = N <= 48
 
     print(f"\nBuilding suite for: {task.name()}")
     print(f"  Target params: ~{target_params:,}")
-    if not include_cubic:
-        print(f"  Skipping O(N^3) full models (N={N} > 48)")
 
     # --- Solve balanced dimensions ---
     d_deep  = ParamCalculator.solve_d(lambda d: DeepSetBaseline(d), target_params)
     d_set2  = ParamCalculator.solve_d(lambda d: Full2Trans(d), target_params)
+    d_set3  = ParamCalculator.solve_d(lambda d: Full3Trans(d, N), target_params)
     d_seq2  = ParamCalculator.solve_d(lambda d: Full2TransSeq(d, N), target_params)
+    d_seq3  = ParamCalculator.solve_d(lambda d: Full3TransSeq(d, N), target_params)
     d_sp2   = ParamCalculator.solve_d(lambda d: Sparse2Trans(d), target_params)
     d_sp3   = ParamCalculator.solve_d(lambda d: Sparse3Trans(d), target_params)
     d_mpnn2 = ParamCalculator.solve_d(lambda d: MPNNModel(d), target_params)
     d_mpnn3 = ParamCalculator.solve_d(lambda d: MPNN3Body(d), target_params)
-
-    if include_cubic:
-        d_set3 = ParamCalculator.solve_d(lambda d: Full3Trans(d, N), target_params)
-        d_seq3 = ParamCalculator.solve_d(lambda d: Full3TransSeq(d, N), target_params)
 
     # --- Graph structures ---
     db_src, db_dst = build_debruijn_edges(N)
@@ -361,13 +353,11 @@ def build_suite(task, N, target_params=45000):
 
     # Set-Transformers (permutation invariant)
     suite.register("SetTrans-2 (O(N^2))", Full2Trans(d_set2))
-    if include_cubic:
-        suite.register("SetTrans-3 (O(N^3))", Full3Trans(d_set3, N))
+    suite.register("SetTrans-3 (O(N^3))", Full3Trans(d_set3, N))
 
     # Seq-Transformers (position aware)
     suite.register("SeqTrans-2 (O(N^2))", Full2TransSeq(d_seq2, N))
-    if include_cubic:
-        suite.register("SeqTrans-3 (O(N^3))", Full3TransSeq(d_seq3, N))
+    suite.register("SeqTrans-3 (O(N^3))", Full3TransSeq(d_seq3, N))
 
     # Sparse models (edges/triplets baked in)
     suite.register("DeBruijn-2 (Struct)", Sparse2Trans(d_sp2, db_src, db_dst))

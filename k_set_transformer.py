@@ -10,7 +10,8 @@ class Full2Trans(BaseEncoder):
     def __init__(self, d_model, num_heads=4):
         super().__init__(d_model)
         # We use the standard PyTorch implementation for the "Classic" feel
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads,
+                                                     dim_feedforward=4*d_model, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
 
     def forward(self, x, _=None):
